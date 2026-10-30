@@ -101,15 +101,24 @@ def list_tasks(done: Optional[bool] = None) -> list:
 
     done: true — только выполненные, false — только невыполненные, не задано — все.
     """
-    # TODO: GET /api/tasks [?urlencode({"done": "true"/"false"})]
-    raise NotImplementedError
+    path = "/api/tasks"
 
+    # Если параметр done передан, формируем query string
+    if done is not None:
+        # Преобразуем True/False в строковые "true"/"false" для API
+        query_params = {"done": "true" if done else "false"}
+        path += "?" + urllib.parse.urlencode(query_params)
+
+    # Делаем запрос с помощью готового помощника
+    return _get(path)
 
 @mcp.tool()
 def complete_task(task_id: int) -> dict:
     """Отмечает задачу выполненной. Повторный вызов для уже выполненной задачи не ошибка."""
-    # TODO: POST /api/tasks/{task_id}/complete
-    raise NotImplementedError
+    # Подставляем id задачи в путь эндпоинта
+    path = f"/api/tasks/{task_id}/complete"
+    # Делаем POST-запрос без тела (передаем пустой словарь)
+    return _post(path, payload={})
 
 
 class ConfirmDelete(BaseModel):

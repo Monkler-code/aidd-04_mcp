@@ -3,9 +3,9 @@
   "modelProviders": {
     "openai": [
       {
-        "id": "<model_name>",
-        "name": "<model_name>",
-        "baseUrl": "<model_url>",
+        "id": "agentic/gc_v3",
+        "name": "agentic/gc_v3",
+        "baseUrl": "https://llmhub.sberai-rnd.ru/v1",
         "envKey": "MODEL_API_KEY",
         "generationConfig": {
           "samplingParams": {
@@ -25,6 +25,28 @@
   "model": {
     "name": "<model_name>",
     "baseUrl": "<model_url>"
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "^(run_shell_command|mcp__todo__.*)$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"$QWEN_PROJECT_DIR/.qwen/hooks/guard.py\"",
+            "name": "todo-guard",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  },
+  "mcpServers": {
+    "todo": {
+      "command": "/home/monkler/miniconda3/envs/aidd-mcp/bin/python3",
+      "args": ["/home/monkler/aidd_week_04_mcp/practice/mcp/server.py"],
+      "env": { "TODO_API_URL": "http://127.0.0.1:5000" }
+    }
   },
   "context": {
     "fileName": ["QWEN.md"]
