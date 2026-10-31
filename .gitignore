@@ -7,3 +7,4 @@ node_modules/
 .DS_Store
 practice/docker/settings.generated.json
 *.sh
+*.vscode

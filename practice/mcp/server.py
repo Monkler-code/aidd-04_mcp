@@ -13,9 +13,13 @@ import sys
 from datetime import datetime
 import urllib.error
 import urllib.request
+import datetime
+import urllib.parse
+from typing import Optional, List, Dict, Any
 
 from typing import Optional
 from urllib.parse import urlencode
+from datetime import date
 
 try:  # SDK 2.x: FastMCP переименован в MCPServer, McpError в MCPError
     from mcp.server.mcpserver import Context, MCPServer as FastMCP
@@ -95,22 +99,131 @@ def add_task(title: str, priority: str = "normal", due: Optional[str] = None) ->
     return _post("/api/tasks", {"title": title, "priority": priority, "due": due})
 
 
-@mcp.tool()
-def list_tasks(done: Optional[bool] = None) -> list:
-    """Возвращает полный список задач.
+"""@mcp.tool()
+def list_tasks(
+    done: Optional[bool] = None,
+    overdue: Optional[bool] = None,
+    priority: Optional[int] = None,
+    query: Optional[str] = None,
+    due_before: Optional[str] = None,
+    limit: Optional[int] = None,
+    compact: bool = True
+) -> List[Dict[str, Any]]:
+    Возвращает список задач с возможностью фильтрации, поиска и ограничения вывода.
+    Используйте этот инструмент, когда пользователю нужно найти конкретные задачи, 
+    посмотреть просроченные или отфильтровать по приоритету/дате.
 
-    done: true — только выполненные, false — только невыполненные, не задано — все.
-    """
+    Параметры:
+    ----------
+    done : bool, optional
+        Фильтр по статусу выполнения. True — только выполненные, False — только невыполненные, None — все.
+    overdue : bool, optional
+        Фильтр по просроченным задачам. True — вернуть только те задачи, у которых 'due_date' в прошлом и done=False.
+        False — только не просроченные.
+    priority : int, optional
+        Фильтр по уровню приоритета (например, от 1 до 5). В ответ попадут задачи с указанным приоритетом.
+    query : str, optional
+        Поисковая подстрока (регистронезависимая). Ищет совпадение в названии ('title') или описании ('description') задачи.
+    due_before : str, optional
+        Строка даты в формате 'YYYY-MM-DD' или 'YYYY-MM-DDTHH:MM:SS'. Возвращает задачи, дедлайн которых строго до этой даты.
+    limit : int, optional
+        Максимальное количество возвращаемых задач (полезно для пейджинга или кратких сводок).
+    compact : bool, default True
+        Если True, возвращает только ключевые поля (id, title, done, due_date, priority). 
+        Если False, возвращает полную информацию о задачах со всеми метаданными.
+
     path = "/api/tasks"
-
-    # Если параметр done передан, формируем query string
+    
+    # Единственный параметр, который умеет фильтровать сам REST API
     if done is not None:
-        # Преобразуем True/False в строковые "true"/"false" для API
         query_params = {"done": "true" if done else "false"}
         path += "?" + urllib.parse.urlencode(query_params)
+    
+    # Получаем исходный список задач от API
+    tasks = _get(path)
+    if not tasks:
+        return []
 
-    # Делаем запрос с помощью готового помощника
-    return _get(path)
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # Внутренняя функция для безопасного парсинга дат из API (ISO формат)
+    def parse_due_date(task_due_str):
+        if not task_due_str:
+            return None
+        try:
+            # Пытаемся распарсить с учетом таймзоны (обычно 'Z' на конце)
+            # Если в API даты без Z, замените на datetime.fromisoformat(task_due_str)
+            return datetime.datetime.fromisoformat(task_due_str.replace('Z', '+00:00'))
+        except ValueError:
+            return None
+
+    # 1. Фильтрация по overdue (просрочено)
+    if overdue is not None:
+        filtered_tasks = []
+        for task in tasks:
+            due_dt = parse_due_date(task.get("due_date"))
+            is_task_done = task.get("done", False)
+            
+            # Просроченной считается невыполненная задача с дедлайном в прошлом
+            is_overdue = (due_dt is not None) and (due_dt < now) and (not is_task_done)
+            
+            if overdue and is_overdue:
+                filtered_tasks.append(task)
+            elif not overdue and not is_overdue:
+                filtered_tasks.append(task)
+        tasks = filtered_tasks
+
+    # 2. Фильтрация по priority (приоритет)
+    if priority is not None:
+        tasks = [t for t in tasks if t.get("priority") == priority]
+
+    # 3. Поиск по подстроке query (в названии или описании)
+    if query:
+        query_lower = query.lower()
+        tasks = [
+            t for t in tasks 
+            if query_lower in t.get("title", "").lower() or query_lower in t.get("description", "").lower()
+        ]
+
+    # 4. Фильтрация по due_before (дедлайн до указанной даты)
+    if due_before:
+        try:
+            # Приводим строку due_before к datetime для корректного сравнения
+            # Если строка содержит только дату 'YYYY-MM-DD', добавляем время конца дня или начала
+            if len(due_before) == 10:
+                before_dt = datetime.datetime.strptime(due_before, "%Y-%m-%d").replace(tzinfo=datetime.timezone.utc)
+            else:
+                before_dt = datetime.datetime.fromisoformat(due_before.replace('Z', '+00:00'))
+            
+            filtered_tasks = []
+            for t in tasks:
+                t_due = parse_due_date(t.get("due_date"))
+                if t_due and t_due < before_dt:
+                    filtered_tasks.append(t)
+            tasks = filtered_tasks
+        except ValueError:
+            # Если передан некорректный формат даты, можно либо проигнорировать, либо кинуть ошибку
+            pass
+
+    # 5. Ограничение количества результатов (limit)
+    if limit is not None and limit > 0:
+        tasks = tasks[:limit]
+
+    # 6. Форматирование под компактный вид (compact)
+    if compact:
+        compact_tasks = []
+        for t in tasks:
+            compact_tasks.append({
+                "id": t.get("id"),
+                "title": t.get("title"),
+                "done": t.get("done"),
+                "priority": t.get("priority"),
+                "due_date": t.get("due_date")
+            })
+        return compact_tasks
+
+    return tasks
+"""
 
 @mcp.tool()
 def complete_task(task_id: int) -> dict:
@@ -162,13 +275,124 @@ def task_resource(task_id: str) -> str:
     return json.dumps(_get(f"/api/tasks/{number}"), ensure_ascii=False, indent=2)
 
 
+@mcp.resource("todo://digest", mime_type="application/json")
+def task_digest() -> str:
+    """Список открытых задач: сначала просроченные, затем по сроку."""
+
+    response = _get("/api/tasks")
+
+    # Поддерживаем ответ в виде списка или объекта с полем tasks.
+    tasks = (
+        response
+        if isinstance(response, list)
+        else response.get("tasks", response.get("items", []))
+    )
+
+    today = date.today()
+    result = []
+
+    for task in tasks:
+        status = str(task.get("status", "")).strip().lower()
+
+        # Исключаем завершённые и отменённые задачи.
+        if (
+            task.get("completed") is True
+            or task.get("done") is True
+            or status in {
+                "done", "completed", "closed",
+                "cancelled", "canceled",
+                "выполнена", "выполнено",
+                "закрыта", "закрыто",
+                "отменена", "отменено"
+            }
+        ):
+            continue
+
+        # Получаем срок выполнения.
+        due_raw = (
+            task.get("due_date")
+            or task.get("due")
+            or task.get("deadline")
+        )
+
+        due = None
+
+        if due_raw:
+            try:
+                due = date.fromisoformat(str(due_raw)[:10])
+            except (ValueError, TypeError):
+                pass
+
+        # Просроченные задачи идут первыми.
+        overdue = due is not None and due < today
+
+        sort_key = (
+            0 if overdue else 1,
+            due or date.max
+        )
+
+        result.append((sort_key, task))
+
+    result.sort(key=lambda item: item[0])
+
+    # Возвращаем отсортированный JSON.
+    open_tasks = [task for _, task in result]
+
+    return json.dumps(
+        open_tasks,
+        ensure_ascii=False,
+        indent=2
+    )
+
+
 # --- Prompts: готовые сценарии, которые вызывает пользователь (в клиентах это slash-команда) ---
 
 @mcp.prompt()
-def do_something() -> str:
-    # TODO: придумываем сценарий
-    # например: пометить сделанными все задачи со словом W, срок по которым истёк более N дней назад
-    raise NotImplementedError()    
+def weekly_report(days: int = 7) -> str:
+    """Недельный отчёт: задачи со сроком в ближайшие N дней + просроченные.
+
+    days: сколько дней вперёд смотреть на сроки (по умолчанию 7).
+    """
+    from datetime import date, timedelta
+
+    tasks = _get("/api/tasks")
+    today = date.today()
+    deadline = today + timedelta(days=days)
+
+    lines = ["Недельный отчёт (на", str(deadline), ")"]
+    lines.append("")
+
+    overdue = [t for t in tasks if not t["done"] and t.get("due") and t["due"] < today.isoformat()]
+    upcoming = [t for t in tasks if not t["done"] and t.get("due") and today.isoformat() <= t["due"] <= deadline.isoformat()]
+
+    no_due = [t for t in tasks if not t["done"] and not t.get("due")]
+    done = [t for t in tasks if t["done"]]
+
+    if overdue:
+        lines.append("### Просроченные")
+        for t in overdue:
+
+            lines.append(f"- #{t['id']} {t['title']} (срок {t['due']})")
+        lines.append("")
+
+    if upcoming:
+        lines.append("### Срок в ближайшие дни")
+        for t in upcoming:
+
+            lines.append(f"- #{t['id']} {t['title']} (срок {t['due']})")
+        lines.append("")
+
+    if no_due:
+        lines.append("### Без срока")
+        for t in no_due:
+
+            lines.append(f"- #{t['id']} {t['title']}")
+        lines.append("")
+
+    lines.append(f"Итого: всего {len(tasks)}, невыполненных {len(overdue) + len(upcoming) + len(no_due)}, выполненных {len(done)}")
+    return "\n".join(lines)
+
+
 
 
 if __name__ == "__main__":
